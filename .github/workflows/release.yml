@@ -1,4 +1,6 @@
-# Builds and publishes a release when a tag like v2026.10.29 is pushed.
+# Builds and publishes a release when a tag like v2026.10.29 is pushed, or
+# when started with workflow_dispatch on such a tag (by hand, or by
+# weekly-release.yml).
 #
 #   plan     reads the CPython versions and platforms from docker-bake.hcl
 #   build    one job per CPython version x platform, each on a native runner
@@ -16,6 +18,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions: {}
 
@@ -37,6 +40,13 @@ jobs:
       image: ${{ steps.image.outputs.image }}
       release: ${{ steps.image.outputs.release }}
     steps:
+      - name: Check the ref is a release tag
+        if: github.ref_type != 'tag' || !startsWith(github.ref_name, 'v')
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::releases are built from v* tags, not $REF"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
