@@ -1,6 +1,6 @@
 # Builds and publishes a release when a tag like v2026.10.29 is pushed, or
-# when started with workflow_dispatch on such a tag (by hand, or by
-# weekly-release.yml).
+# when another workflow (weekly-release.yml) calls it with the tag to
+# release. Either way, every job builds the commit that tag points at.
 #
 #   plan     reads the CPython versions and platforms from docker-bake.hcl
 #   build    one job per CPython version x platform, each on a native runner
@@ -18,12 +18,19 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
+  # A tag pushed with GITHUB_TOKEN doesn't trigger `push`, so a workflow
+  # that creates one calls this workflow directly instead.
+  workflow_call:
+    inputs:
+      tag:
+        description: The v* tag to release
+        type: string
+        required: true
 
 permissions: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -39,22 +46,30 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       image: ${{ steps.image.outputs.image }}
       release: ${{ steps.image.outputs.release }}
+      tag: ${{ steps.ref.outputs.tag }}
+      sha: ${{ steps.ref.outputs.sha }}
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - name: Check the ref is a release tag
-        if: github.ref_type != 'tag' || !startsWith(github.ref_name, 'v')
-        env:
-          REF: ${{ github.ref }}
+      - name: Check the tag name
         run: |
-          echo "::error::releases are built from v* tags, not $REF"
-          exit 1
+          if [[ "$TAG" != v* ]]; then
+            echo "::error::releases are built from v* tags, not '$TAG'"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
+      # Every later job checks out this exact commit, not the tag name, so
+      # they all build the same thing even if the tag were moved mid-run.
+      - id: ref
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - id: plan
         run: bash .github/scripts/plan.sh >> "$GITHUB_OUTPUT"
       - id: image
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           # Registry names must be lowercase; owners often aren't.
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
@@ -75,6 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -99,12 +115,12 @@ jobs:
             PYTHON_VERSION=${{ matrix.version }}
             PYTHON_SHA256=${{ matrix.sha256 }}
             SOURCE_REPOSITORY=${{ github.server_url }}/${{ github.repository }}
-            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_REVISION=${{ needs.plan.outputs.sha }}
           no-cache: true
           pull: true
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
             org.opencontainers.image.version=${{ matrix.version }}
             org.opencontainers.image.title=python
             org.opencontainers.image.description=CPython ${{ matrix.version }} and its C libraries built from source on distroless
@@ -125,7 +141,7 @@ jobs:
             PYTHON_VERSION=${{ matrix.version }}
             PYTHON_SHA256=${{ matrix.sha256 }}
             SOURCE_REPOSITORY=${{ github.server_url }}/${{ github.repository }}
-            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_REVISION=${{ needs.plan.outputs.sha }}
           outputs: type=cacheonly
 
       - id: syft
@@ -242,10 +258,11 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.sha }}
           persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

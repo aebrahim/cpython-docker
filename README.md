@@ -273,8 +273,8 @@ Rules of thumb for each library:
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | `.github/workflows/test.yml` | pull requests, pushes to `main` | `update-deps.py --verify-pins`, then builds and tests every CPython version on every platform, with aggressive caching |
-| `.github/workflows/release.yml` | pushing a `v*` tag, or by hand on one | builds from scratch on native runners, pushes multi-arch images to GHCR, publishes a GitHub release with SBOMs |
-| `.github/workflows/weekly-release.yml` | Mondays 9:01 AM Los Angeles time, or by hand | if `main` changed since the last `v*` tag, tags it with the date and starts `release.yml` |
+| `.github/workflows/release.yml` | pushing a `v*` tag, or called by `weekly-release.yml` | builds from scratch on native runners, pushes multi-arch images to GHCR, publishes a GitHub release with SBOMs |
+| `.github/workflows/weekly-release.yml` | Mondays 9:01 AM Los Angeles time, or by hand | if `main` changed since the last `v*` tag, tags it with the date and runs `release.yml` on that tag |
 | `.github/workflows/update-deps.yml` | daily, or by hand | runs the updater and opens a PR; refreshes the pinned signing keys in a separate PR |
 | `.github/dependabot.yml` | weekly | updates the actions used by the workflows |
 
@@ -288,7 +288,7 @@ version there adds it to CI and releases.
 Every Monday at 9:01 AM Los Angeles time, `weekly-release.yml` checks
 whether `main` has any commits since the last `v*` tag. If it does, it tags
 `main` with the date (`v2026.11.23`, or `v2026.11.23-1`, `-2`, ... if that
-tag exists) and starts `release.yml` on the new tag. Run it by hand from the
+tag exists) and runs `release.yml` on the new tag. Run it by hand from the
 Actions tab to release now; its `force` input releases even if nothing
 changed. To tag by hand instead:
 
