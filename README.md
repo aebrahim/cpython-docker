@@ -273,7 +273,7 @@ Rules of thumb for each library:
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | `.github/workflows/test.yml` | pull requests, pushes to `main` | `update-deps.py --verify-pins`, then builds and tests every CPython version on every platform, with aggressive caching |
-| `.github/workflows/release.yml` | pushing a `v*` tag | builds from scratch on native runners, pushes multi-arch images to GHCR, publishes a GitHub release with SBOMs |
+| `.github/workflows/release.yml` | by hand, on `main` | tags the commit, builds from scratch on native runners, pushes multi-arch images to GHCR, publishes a GitHub release with SBOMs |
 | `.github/workflows/update-deps.yml` | daily, or by hand | runs the updater and opens a PR; refreshes the pinned signing keys in a separate PR |
 | `.github/dependabot.yml` | weekly | updates the actions used by the workflows |
 
@@ -284,9 +284,17 @@ version there adds it to CI and releases.
 
 ### Releasing
 
+Run the Release workflow on `main`: **Actions > Release > Run workflow**, or
+
 ```bash
-git tag v2026.10.29 && git push origin v2026.10.29
+gh workflow run release.yml --ref main
 ```
+
+Don't push tags by hand. The workflow's `tag` job tags the commit it runs on
+with the current date in UTC, `v2026.10.29`; if that day already has a
+release tag it adds a suffix: `v2026.10.29-1`, `v2026.10.29-2`, and so on.
+The tag is created before anything is built, so a name is never used twice,
+even by a run that fails. Only one release runs at a time.
 
 For each CPython version in `docker-bake.hcl`, and each platform, a job on a
 native runner (`ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64; no
@@ -316,8 +324,10 @@ Finally, `release` collects every job's SBOMs, the `vex/` statements and a
 everything, and only then publishes. That suits immutable releases, where a
 published release can't gain or change assets. The release notes list the
 image digests and every pinned version. If the workflow fails before
-publishing, re-running it replaces the leftover draft; a published release
-is never modified.
+publishing, **Re-run failed jobs** retries under the same tag and replaces
+the leftover draft; a published release is never modified. A new run (or
+**Re-run all jobs**) creates a new tag instead, and the failed run's tag
+stays behind without a release.
 
 ### PR caching
 

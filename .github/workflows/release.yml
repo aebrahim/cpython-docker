@@ -1,5 +1,9 @@
-# Builds and publishes a release when a tag like v2026.10.29 is pushed.
+# Builds and publishes a release. Run it by hand (Actions > Release > Run
+# workflow) on the default branch; it creates the release's git tag itself,
+# so nobody pushes tags.
 #
+#   tag      creates the tag: v<UTC date> (e.g. v2026.10.29), or
+#            v2026.10.29-1, -2, ... if that day already has a release tag
 #   plan     reads the CPython versions and platforms from docker-bake.hcl
 #   build    one job per CPython version x platform, each on a native runner
 #            (no QEMU): build with no cache, push by digest, test, SBOM
@@ -7,27 +11,87 @@
 #            into one multi-arch image and tag it
 #   release  collect every job's SBOMs into a single GitHub release
 #
-# Nothing is tagged until every platform of a version has built and passed
-# its tests. The GitHub release is created as a draft, filled, and only then
-# published, so it works with immutable releases (assets can't be added
-# after publishing).
+# The git tag is created first, so its name is reserved even if a later job
+# fails; "Re-run failed jobs" retries with the same name, while a fresh run
+# gets the next one. Nothing is tagged in the registry until every platform
+# of a version has built and passed its tests. The GitHub release is created
+# as a draft, filled, and only then published, so it works with immutable
+# releases (assets can't be added after publishing).
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions: {}
 
+# One release at a time, so two runs can't pick the same tag name.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
   SYFT_VERSION: v1.55.0
 
 jobs:
+  # Tags the commit the workflow was run on with today's date (UTC), adding
+  # -1, -2, ... when that day already has a tag. A tag pushed with
+  # GITHUB_TOKEN doesn't trigger any workflow.
+  tag:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      release: ${{ steps.tag.outputs.release }}
+    steps:
+      - name: Check the branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::releases are made from ${DEFAULT_BRANCH}, not ${GITHUB_REF}"
+            exit 1
+          fi
+
+      - name: Create the tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          day=$(date -u +%Y.%m.%d)
+          # Retries in case a tag of the same name appears between listing
+          # and creating it.
+          for attempt in 1 2 3 4 5; do
+            # -1: no tag today yet; 0: only v<day>; n: v<day>-n is the highest.
+            n=-1
+            refs=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v${day}" --jq '.[].ref')
+            while read -r ref; do
+              [ -n "$ref" ] || continue
+              suffix=${ref#"refs/tags/v${day}"}
+              if [ -z "$suffix" ]; then
+                if [ "$n" -lt 0 ]; then n=0; fi
+              elif [[ $suffix =~ ^-([0-9]+)$ ]]; then
+                if [ "$((10#${BASH_REMATCH[1]}))" -gt "$n" ]; then n=$((10#${BASH_REMATCH[1]})); fi
+              fi
+            done <<<"$refs"
+            if [ "$n" -lt 0 ]; then tag="v${day}"; else tag="v${day}-$((n + 1))"; fi
+
+            if gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+                 -f ref="refs/tags/${tag}" -f sha="$GITHUB_SHA" > /dev/null; then
+              echo "Tagged ${GITHUB_SHA} as ${tag}"
+              echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+              echo "release=${tag#v}" >> "$GITHUB_OUTPUT"
+              echo "Release \`${tag}\` of \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::warning::couldn't create ${tag} (attempt ${attempt}); retrying"
+            sleep $((attempt * 2))
+          done
+          echo "::error::couldn't create a release tag for ${day}"
+          exit 1
+
   plan:
+    needs: tag
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -35,7 +99,6 @@ jobs:
       pythons: ${{ steps.plan.outputs.pythons }}
       matrix: ${{ steps.plan.outputs.matrix }}
       image: ${{ steps.image.outputs.image }}
-      release: ${{ steps.image.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,12 +106,9 @@ jobs:
       - id: plan
         run: bash .github/scripts/plan.sh >> "$GITHUB_OUTPUT"
       - id: image
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           # Registry names must be lowercase; owners often aren't.
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-          echo "release=${TAG#v}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: plan
@@ -160,7 +220,7 @@ jobs:
           retention-days: 7
 
   merge:
-    needs: [plan, build]
+    needs: [tag, plan, build]
     name: tag ${{ matrix.python.version }}
     runs-on: ubuntu-24.04
     permissions:
@@ -171,7 +231,7 @@ jobs:
         python: ${{ fromJSON(needs.plan.outputs.pythons) }}
     env:
       IMAGE: ${{ needs.plan.outputs.image }}
-      RELEASE: ${{ needs.plan.outputs.release }}
+      RELEASE: ${{ needs.tag.outputs.release }}
       VERSION: ${{ matrix.python.version }}
       MINOR: ${{ matrix.python.minor }}
     steps:
@@ -226,13 +286,13 @@ jobs:
 
   # Collects every build's outputs and publishes them as one GitHub release.
   release:
-    needs: [plan, merge]
+    needs: [tag, merge]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ needs.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
