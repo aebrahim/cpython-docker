@@ -1,9 +1,13 @@
-# Builds and publishes a release. Run it by hand (Actions > Release > Run
-# workflow) on the default branch; it creates the release's git tag itself,
-# so nobody pushes tags.
+# Builds and publishes a release of the default branch's latest commit. Run
+# it by hand (Actions > Release > Run workflow); it creates the release's git
+# tag itself, so nobody pushes tags. Every run does the same thing, so it's
+# safe to run again, or on a schedule:
 #
-#   tag      creates the tag: v<UTC date> (e.g. v2026.10.29), or
-#            v2026.10.29-1, -2, ... if that day already has a release tag
+#   tag      if the commit already has a published release, stop. Otherwise
+#            delete any earlier attempt that never published (its draft
+#            release and its tag), then tag the commit v<UTC date> (e.g.
+#            v2026.10.29), or v2026.10.29-1, -2, ... if that day already has
+#            a published release
 #   plan     reads the CPython versions and platforms from docker-bake.hcl
 #   build    one job per CPython version x platform, each on a native runner
 #            (no QEMU): build with no cache, push by digest, test, SBOM
@@ -11,12 +15,10 @@
 #            into one multi-arch image and tag it
 #   release  collect every job's SBOMs into a single GitHub release
 #
-# The git tag is created first, so its name is reserved even if a later job
-# fails; "Re-run failed jobs" retries with the same name, while a fresh run
-# gets the next one. Nothing is tagged in the registry until every platform
-# of a version has built and passed its tests. The GitHub release is created
-# as a draft, filled, and only then published, so it works with immutable
-# releases (assets can't be added after publishing).
+# Nothing is tagged in the registry until every platform of a version has
+# built and passed its tests. The GitHub release is created as a draft,
+# filled, and only then published, so it works with immutable releases
+# (assets can't be added after publishing).
 name: Release
 
 on:
@@ -24,7 +26,8 @@ on:
 
 permissions: {}
 
-# One release at a time, so two runs can't pick the same tag name.
+# One release at a time: a run never sees another's attempt in progress, so
+# any unpublished release tag it finds is one that failed.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -33,31 +36,82 @@ env:
   SYFT_VERSION: v1.55.0
 
 jobs:
-  # Tags the commit the workflow was run on with today's date (UTC), adding
-  # -1, -2, ... when that day already has a tag. A tag pushed with
-  # GITHUB_TOKEN doesn't trigger any workflow.
+  # A tag pushed with GITHUB_TOKEN doesn't trigger any workflow.
   tag:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     outputs:
+      skip: ${{ steps.tag.outputs.skip }}
       tag: ${{ steps.tag.outputs.tag }}
       release: ${{ steps.tag.outputs.release }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
+      # Full history and every tag, to find the tags at this commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
       - name: Check the branch
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
-            echo "::error::releases are made from ${DEFAULT_BRANCH}, not ${GITHUB_REF}"
+          default=$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)
+          if [ "$GITHUB_REF" != "refs/heads/${default}" ]; then
+            echo "::error::releases are made from ${default}, not ${GITHUB_REF}"
             exit 1
           fi
 
-      - name: Create the tag
+      - name: Tag the commit
         id: tag
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
+          # Every release, newest first: "<tag> <isDraft>".
+          releases=$(gh release list --limit 10000 --json tagName,isDraft \
+                       --jq '.[] | "\(.tagName) \(.isDraft)"')
+          in_releases() { grep -qxF -- "$1 $2" <<<"$releases"; }
+
+          # Already released: nothing to do.
+          for t in $(git tag --points-at HEAD); do
+            if in_releases "$t" false; then
+              echo "::notice::${GITHUB_SHA} is already released as ${t}; nothing to do"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          # Succeeds if $1 has a published release; fails if it has none or
+          # only a draft; stops the job on any other error, so a lookup that
+          # failed is never taken to mean "not published".
+          published() {
+            local out
+            if out=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$1" --jq .draft 2>&1); then
+              [ "$out" = false ]
+            elif grep -q 'HTTP 404' <<<"$out"; then
+              return 1
+            else
+              echo "::error::looking up the release of $1: ${out}"
+              exit 1
+            fi
+          }
+
+          # Earlier attempts that never published, at this commit or an
+          # older one: delete their draft releases and tags. Each is checked
+          # again by itself, in case it's too old for the list above.
+          pattern='^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-[0-9]+)?$'
+          for t in $(git tag --list 'v*'); do
+            [[ $t =~ $pattern ]] || continue
+            if in_releases "$t" false || published "$t"; then continue; fi
+            if in_releases "$t" true; then
+              echo "Deleting ${t}, a failed attempt: its draft release and tag"
+              gh release delete "$t" --yes --cleanup-tag
+            else
+              echo "Deleting ${t}, a failed attempt: its tag"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${t}"
+            fi
+          done
+
           day=$(date -u +%Y.%m.%d)
           # Retries in case a tag of the same name appears between listing
           # and creating it.
@@ -90,8 +144,10 @@ jobs:
           echo "::error::couldn't create a release tag for ${day}"
           exit 1
 
+  # Skipping this skips every later job too.
   plan:
     needs: tag
+    if: needs.tag.outputs.skip == 'false'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

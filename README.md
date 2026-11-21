@@ -273,7 +273,7 @@ Rules of thumb for each library:
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | `.github/workflows/test.yml` | pull requests, pushes to `main` | `update-deps.py --verify-pins`, then builds and tests every CPython version on every platform, with aggressive caching |
-| `.github/workflows/release.yml` | by hand, on `main` | tags the commit, builds from scratch on native runners, pushes multi-arch images to GHCR, publishes a GitHub release with SBOMs |
+| `.github/workflows/release.yml` | by hand, on `main` | unless `main` is already released: tags it, builds from scratch on native runners, pushes multi-arch images to GHCR, publishes a GitHub release with SBOMs |
 | `.github/workflows/update-deps.yml` | daily, or by hand | runs the updater and opens a PR; refreshes the pinned signing keys in a separate PR |
 | `.github/dependabot.yml` | weekly | updates the actions used by the workflows |
 
@@ -290,11 +290,18 @@ Run the Release workflow on `main`: **Actions > Release > Run workflow**, or
 gh workflow run release.yml --ref main
 ```
 
-Don't push tags by hand. The workflow's `tag` job tags the commit it runs on
-with the current date in UTC, `v2026.10.29`; if that day already has a
-release tag it adds a suffix: `v2026.10.29-1`, `v2026.10.29-2`, and so on.
-The tag is created before anything is built, so a name is never used twice,
-even by a run that fails. Only one release runs at a time.
+Don't push tags by hand; the workflow's `tag` job makes them. Every run
+does the same thing, so it's always safe to run it again:
+
+1. If the commit already has a published release, it stops there.
+2. It deletes any earlier attempt that never published, at this commit or
+   an older one: its draft release and its tag.
+3. It tags the commit with the current date in UTC, `v2026.10.29`. If that
+   day already has a published release it adds a suffix: `v2026.10.29-1`,
+   `v2026.10.29-2`, and so on.
+
+So to retry a failed release, run the workflow again. Only one release runs
+at a time.
 
 For each CPython version in `docker-bake.hcl`, and each platform, a job on a
 native runner (`ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64; no
@@ -315,7 +322,7 @@ per-platform images into one multi-arch image and tags it:
 
 | Tag | Meaning |
 |-----|---------|
-| `ghcr.io/<owner>/<repo>:3.14.10-2026.10.29` | this release; never reused, so safe to pin |
+| `ghcr.io/<owner>/<repo>:3.14.10-2026.10.29` | this release; never reused once the release is published, so safe to pin |
 | `ghcr.io/<owner>/<repo>:3.14.10` | latest release of 3.14.10 (moves) |
 | `ghcr.io/<owner>/<repo>:3.14` | latest release of 3.14 (moves) |
 
@@ -323,11 +330,10 @@ Finally, `release` collects every job's SBOMs, the `vex/` statements and a
 `SHA256SUMS` file. It creates the GitHub release **as a draft**, uploads
 everything, and only then publishes. That suits immutable releases, where a
 published release can't gain or change assets. The release notes list the
-image digests and every pinned version. If the workflow fails before
-publishing, **Re-run failed jobs** retries under the same tag and replaces
-the leftover draft; a published release is never modified. A new run (or
-**Re-run all jobs**) creates a new tag instead, and the failed run's tag
-stays behind without a release.
+image digests and every pinned version. A published release is never
+modified. A failed attempt's tag and draft are deleted by the next run, which
+may reuse the name and overwrite the images tagged with it; **Re-run failed
+jobs** also works, keeping the tag and replacing the draft.
 
 ### PR caching
 
