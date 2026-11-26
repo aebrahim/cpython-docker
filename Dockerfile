@@ -21,10 +21,10 @@
 # runtime image's glibc, so the runtime's glibc can't be older.
 #
 # BUILD_IMAGE: toolchain only, never shipped.
-ARG BUILD_IMAGE=debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+ARG BUILD_IMAGE=debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 # RUNTIME_IMAGE: glibc + /etc basics, no shell, no OpenSSL. Bump the digest to
 # pick up glibc security fixes.
-ARG RUNTIME_IMAGE=gcr.io/distroless/base-nossl-debian13@sha256:3a2dbf10c2fdafe5865e2b03a4a3b9b23f2e280229a81730415379b76dc70592
+ARG RUNTIME_IMAGE=gcr.io/distroless/base-nossl-debian13@sha256:f21fdfe4ede467d9ea8a6caaec1f8381ea4502243a3e8bb1c43df80c6fbaaeae
 
 # ---- CPU baseline -----------------------------------------------------------
 # Extra compiler/linker flags for linux/amd64 only (arm64 builds use the
@@ -66,17 +66,17 @@ ARG BZIP2_VERSION=1.0.8
 ARG BZIP2_SHA256=ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
 ARG XZ_VERSION=5.8.4
 ARG XZ_SHA256=4ce24038fd4221e0d13bc1a2de7a4db56e90b92b3bf75321f6c14be73f65de4b
-ARG ZSTD_VERSION=1.5.7
-ARG ZSTD_SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
-ARG LIBFFI_VERSION=3.8.1
-ARG LIBFFI_SHA256=81e879c094cc5ec3186c48510c6385ac6b3e866192e8bc71a35245703757ee40
+ARG ZSTD_VERSION=1.6.0
+ARG ZSTD_SHA256=2ba599ae2a257976278e7e71e998433a387bfd18aa7b78678229fd5d84f5e9b8
+ARG LIBFFI_VERSION=3.8.2
+ARG LIBFFI_SHA256=a699fda2b090c4b46cb79cf60c4dacfce480eb05742c0de66acf3af174a47f92
 # SQLite tarballs are named by an encoded version (3.54.1 -> 3540100) and live
 # under a per-year directory.
 ARG SQLITE_VERSION=3540100
 ARG SQLITE_YEAR=2026
 ARG SQLITE_SHA256=926ef8d3eab93fbf6e06011901273eec076b25594a4e1cdadd50c987f4f6d64e
-ARG EXPAT_VERSION=2.10.0
-ARG EXPAT_SHA256=c624ba2998fc65df1163a49641ff3f9ab73138b11641d92c86bee0fb01b1bc7f
+ARG EXPAT_VERSION=2.11.0
+ARG EXPAT_SHA256=61e7614b602201c28a189dafee78f5bceaee192bbde46a930752ff09cf5542fa
 ARG MPDECIMAL_VERSION=4.0.1
 ARG MPDECIMAL_SHA256=96d33abb4bb0070c7be0fed4246cd38416188325f820468214471938545b1ac8
 ARG NCURSES_VERSION=6.6
